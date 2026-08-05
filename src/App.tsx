@@ -183,6 +183,8 @@ function App() {
   const objectColorRef = useRef('#ffffff')
   const renderQualityRef = useRef(1)
   const [status, setStatus] = useState('Renderer ready')
+  const [modelName, setModelName] = useState('Dodecahedron')
+  const [demoMode, setDemoMode] = useState(false)
   const [primaryLight, setPrimaryLight] = useState(INITIAL_LIGHT_SETTINGS)
   const [extraLights, setExtraLights] = useState<PointLightSettings[]>(INITIAL_EXTRA_LIGHTS)
   const [objectSettings, setObjectSettings] = useState(INITIAL_OBJECT_SETTINGS)
@@ -200,6 +202,7 @@ function App() {
   const shadowsEnabledRef = useRef(true)
   const smoothingEnabledRef = useRef(true)
   const smoothingAngleThresholdRef = useRef(50)
+  const demoModeRef = useRef(false)
 
   useEffect(() => {
     primaryLightRef.current = primaryLight
@@ -236,6 +239,10 @@ function App() {
   useEffect(() => {
     objectColorRef.current = objectColor
   }, [objectColor])
+
+  useEffect(() => {
+    demoModeRef.current = demoMode
+  }, [demoMode])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -320,6 +327,11 @@ function App() {
 
       sceneRef.current.update(elapsed / 1000)
       const currentObjectSettings = objectSettingsRef.current
+      if (demoModeRef.current) {
+        currentObjectSettings.rotationX = (currentObjectSettings.rotationX + elapsed * 0.02) % 360
+        currentObjectSettings.rotationY = (currentObjectSettings.rotationY + elapsed * 0.03) % 360
+        currentObjectSettings.rotationZ = (currentObjectSettings.rotationZ + elapsed * 0.015) % 360
+      }
       sceneRef.current.setPrimaryTransform(
         [
           currentObjectSettings.positionX,
@@ -457,6 +469,10 @@ function App() {
     setObjectColor(event.target.value)
   }
 
+  const handleDemoModeChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setDemoMode(event.target.checked)
+  }
+
   const handleObjFileLoad = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? [])
     if (files.length === 0) {
@@ -494,6 +510,7 @@ function App() {
       }
 
       const modelName = objFile.name.replace(/\.[^/.]+$/, '')
+      setModelName(modelName)
       const textureFiles = files.filter((file) => isTextureFile(file.name))
       const textureMap: Record<string, TextureData> = {}
       for (const textureFile of textureFiles) {
@@ -601,6 +618,15 @@ function App() {
     <main className="app-shell">
       <aside className="controls-panel" aria-label="Renderer controls">
         <div className="controls-scroll">
+          <label className="slider-field slider-field--wide slider-field--compact file-field">
+            <span>Load OBJ/MTL/Texture files</span>
+            <input
+              type="file"
+              accept=".obj,.mtl,.mlt,.jpg,.jpeg,.png,.webp,.bmp,.gif"
+              multiple
+              onChange={handleObjFileLoad}
+            />
+          </label>
           <section className="quality-controls" aria-label="Render quality">
             <div className="light-controls__header">
               <button
@@ -642,6 +668,12 @@ function App() {
             </label>
 
             <label className="slider-field slider-field--wide slider-field--compact">
+            
+              <label className="toggle-field slider-field--wide slider-field--compact">
+                <span>Shadows</span>
+                <input type="checkbox" checked={shadowsEnabled} onChange={handleShadowsEnabledChange} />
+              </label>
+
               <span>
                 Shadow quality <strong>{Math.round((shadowQuality / MAX_SHADOW_QUALITY) * 100)}%</strong>
               </span>
@@ -656,21 +688,17 @@ function App() {
               />
             </label>
 
-            <label className="toggle-field slider-field--wide slider-field--compact">
-              <span>Shadows</span>
-              <input type="checkbox" checked={shadowsEnabled} onChange={handleShadowsEnabledChange} />
-            </label>
-
-            <label className="toggle-field slider-field--wide slider-field--compact">
-              <span>Smooth shading</span>
-              <input
-                type="checkbox"
-                checked={smoothingEnabled}
-                onChange={handleSmoothingEnabledChange}
-              />
-            </label>
-
             <label className="slider-field slider-field--wide slider-field--compact">
+
+              <label className="toggle-field slider-field--wide slider-field--compact">
+                <span>Smooth shading</span>
+                <input
+                  type="checkbox"
+                  checked={smoothingEnabled}
+                  onChange={handleSmoothingEnabledChange}
+                />
+              </label>
+
               <span>
                 Smoothing angle <strong>{Math.round(smoothingAngleThreshold)}deg</strong>
               </span>
@@ -885,6 +913,11 @@ function App() {
             </div>
 
             {!transformSectionCollapsed && (
+            <>
+            <label className="toggle-field slider-field--wide slider-field--compact">
+              <span>Demo mode (auto-rotate)</span>
+              <input type="checkbox" checked={demoMode} onChange={handleDemoModeChange} />
+            </label>
 
             <div className="light-grid">
               <label className="slider-field slider-field--compact">
@@ -940,6 +973,7 @@ function App() {
                   step="1"
                   value={objectSettings.rotationX}
                   onChange={handleObjectNumberChange('rotationX')}
+                  disabled={demoMode}
                 />
               </label>
 
@@ -954,6 +988,7 @@ function App() {
                   step="1"
                   value={objectSettings.rotationY}
                   onChange={handleObjectNumberChange('rotationY')}
+                  disabled={demoMode}
                 />
               </label>
 
@@ -968,6 +1003,7 @@ function App() {
                   step="1"
                   value={objectSettings.rotationZ}
                   onChange={handleObjectNumberChange('rotationZ')}
+                  disabled={demoMode}
                 />
               </label>
 
@@ -991,17 +1027,8 @@ function App() {
                 </span>
                 <input type="color" value={objectColor} onChange={handleObjectColorChange} />
               </label>
-
-              <label className="slider-field slider-field--wide slider-field--compact file-field">
-                <span>Load OBJ/MTL/Texture files</span>
-                <input
-                  type="file"
-                  accept=".obj,.mtl,.mlt,.jpg,.jpeg,.png,.webp,.bmp,.gif"
-                  multiple
-                  onChange={handleObjFileLoad}
-                />
-              </label>
             </div>
+            </>
             )}
           </section>
         </div>
@@ -1012,7 +1039,7 @@ function App() {
           <div className="light-controls__header">
             <div>
               <p className="eyebrow">Renderer output</p>
-              <h2>Dodecahedron raster view</h2>
+              <h2>{modelName} raster view</h2>
             </div>
             <div className="status-chip">{status}</div>
           </div>

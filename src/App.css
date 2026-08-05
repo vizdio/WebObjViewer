@@ -255,6 +255,12 @@
   justify-content: space-between;
 }
 
+.toggle-field span {
+  color: #cbd5e1;
+  font-size: 0.74rem;
+  line-height: 18px;
+}
+
 .toggle-field input[type='checkbox'] {
   width: 18px;
   height: 18px;
