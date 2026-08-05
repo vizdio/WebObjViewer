@@ -80,6 +80,8 @@ const MIN_SHADOW_QUALITY = 0
 const MAX_SHADOW_QUALITY = 2
 const MIN_SMOOTHING_ANGLE = 0
 const MAX_SMOOTHING_ANGLE = 180
+const MIN_SHEEN = 0
+const MAX_SHEEN = 1
 
 function isTextureFile(fileName: string): boolean {
   const normalized = fileName.toLowerCase()
@@ -194,6 +196,7 @@ function App() {
   const [shadowsEnabled, setShadowsEnabled] = useState(true)
   const [smoothingEnabled, setSmoothingEnabled] = useState(true)
   const [smoothingAngleThreshold, setSmoothingAngleThreshold] = useState(50)
+  const [sheen, setSheen] = useState(0.5)
   const [rendererMode, setRendererMode] = useState<RendererMode>('auto')
   const [qualitySectionCollapsed, setQualitySectionCollapsed] = useState(true)
   const [lightingSectionCollapsed, setLightingSectionCollapsed] = useState(true)
@@ -202,6 +205,7 @@ function App() {
   const shadowsEnabledRef = useRef(true)
   const smoothingEnabledRef = useRef(true)
   const smoothingAngleThresholdRef = useRef(50)
+  const sheenRef = useRef(0.5)
   const demoModeRef = useRef(false)
 
   useEffect(() => {
@@ -231,6 +235,10 @@ function App() {
   useEffect(() => {
     smoothingAngleThresholdRef.current = smoothingAngleThreshold
   }, [smoothingAngleThreshold])
+
+  useEffect(() => {
+    sheenRef.current = sheen
+  }, [sheen])
 
   useEffect(() => {
     objectSettingsRef.current = objectSettings
@@ -379,6 +387,7 @@ function App() {
         shadowQuality: shadowsEnabledRef.current ? shadowQualityRef.current : 0,
         smoothShading: smoothingEnabledRef.current,
         smoothingAngleThresholdDegrees: smoothingAngleThresholdRef.current,
+        sheen: sheenRef.current,
         fieldOfView: Math.PI / 3,
       })
 
@@ -458,6 +467,10 @@ function App() {
 
   const handleSmoothingAngleThresholdChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setSmoothingAngleThreshold(Number.parseFloat(event.target.value))
+  }
+
+  const handleSheenChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setSheen(Number.parseFloat(event.target.value))
   }
 
   const handleLightColorChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1026,6 +1039,20 @@ function App() {
                   Object color <strong>{objectColor.toUpperCase()}</strong>
                 </span>
                 <input type="color" value={objectColor} onChange={handleObjectColorChange} />
+              </label>
+
+              <label className="slider-field slider-field--wide slider-field--compact">
+                <span>
+                  Sheen <strong>{sheen <= 0.05 ? 'Matte' : sheen >= 0.95 ? 'Polished' : `${Math.round(sheen * 100)}%`}</strong>
+                </span>
+                <input
+                  type="range"
+                  min={MIN_SHEEN.toString()}
+                  max={MAX_SHEEN.toString()}
+                  step="0.01"
+                  value={sheen}
+                  onChange={handleSheenChange}
+                />
               </label>
             </div>
             </>

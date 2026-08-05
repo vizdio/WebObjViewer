@@ -26,6 +26,7 @@ export interface RenderScene {
   shadowQuality: number
   smoothShading: boolean
   smoothingAngleThresholdDegrees: number
+  sheen: number
   fieldOfView: number
 }
 
@@ -265,6 +266,9 @@ export class SoftwareRenderer {
     const cameraMatrix = createLookAtMat4(scene.cameraPosition, scene.cameraTarget, scene.cameraUp)
     const aspectRatio = width / height
     const diffuseWeight = 0.95
+    const sheen = Math.max(0, Math.min(1, scene.sheen))
+    const specularWeight = sheen * sheen
+    const specularExponent = 4 + sheen * 96
     const resolvedLights: ResolvedLight[] = scene.lights.map((light) => {
       const [red, green, blue] = hexToRgb(light.color)
       return {
@@ -304,6 +308,8 @@ export class SoftwareRenderer {
         scene.fieldOfView,
         aspectRatio,
         diffuseWeight,
+        specularWeight,
+        specularExponent,
       )
     }
 
@@ -323,6 +329,8 @@ export class SoftwareRenderer {
     fieldOfView: number,
     aspectRatio: number,
     diffuseWeight: number,
+    specularWeight: number,
+    specularExponent: number,
   ): void {
     if (this.colorBuffer === null || this.depthBuffer === null) {
       return
@@ -433,9 +441,22 @@ export class SoftwareRenderer {
           : shadowVisibility.flat[triangleIndex]?.[lightIndex] ?? 1
         const diffuseLighting =
           lambert * diffuseWeight * attenuation * light.intensity * shadow
-        lightMultiplierRed += light.red * diffuseLighting
-        lightMultiplierGreen += light.green * diffuseLighting
-        lightMultiplierBlue += light.blue * diffuseLighting
+
+        let specularLighting = 0
+        if (specularWeight > 0 && lambert > 0) {
+          const halfVector = normalizeVec3([
+            objectLightDirection[0] + toCamera[0],
+            objectLightDirection[1] + toCamera[1],
+            objectLightDirection[2] + toCamera[2],
+          ])
+          const specularDot = Math.max(0, dotVec3(normalWorld, halfVector))
+          specularLighting =
+            Math.pow(specularDot, specularExponent) * specularWeight * attenuation * light.intensity * shadow
+        }
+
+        lightMultiplierRed += light.red * (diffuseLighting + specularLighting)
+        lightMultiplierGreen += light.green * (diffuseLighting + specularLighting)
+        lightMultiplierBlue += light.blue * (diffuseLighting + specularLighting)
       }
 
       const triangleUv = mesh.triangleTextureCoords?.[triangleIndex] ?? null

@@ -27,6 +27,7 @@ export interface RenderScene {
   shadowQuality: number
   smoothShading: boolean
   smoothingAngleThresholdDegrees: number
+  sheen: number
   fieldOfView: number
 }
 
@@ -336,6 +337,8 @@ export class WebGLRenderer {
 
   private readonly uProjectionLocation: WebGLUniformLocation
 
+  private readonly uCameraPositionLocation: WebGLUniformLocation
+
   private readonly uLightCountLocation: WebGLUniformLocation
 
   private readonly uLightPositionsLocation: WebGLUniformLocation
@@ -347,6 +350,8 @@ export class WebGLRenderer {
   private readonly uAmbientLocation: WebGLUniformLocation
 
   private readonly uDiffuseLocation: WebGLUniformLocation
+
+  private readonly uSheenLocation: WebGLUniformLocation
 
   private readonly uDiffuseTextureLocation: WebGLUniformLocation
 
@@ -427,6 +432,7 @@ export class WebGLRenderer {
 
       uniform mat4 uView;
       uniform mat4 uProjection;
+      uniform vec3 uCameraPosition;
       uniform int uLightCount;
       uniform vec3 uLightPositions[4];
       uniform vec3 uLightColors[4];
@@ -473,8 +479,10 @@ export class WebGLRenderer {
       uniform vec3 uLightPositions[4];
       uniform vec3 uLightColors[4];
       uniform float uLightIntensities[4];
+      uniform vec3 uCameraPosition;
       uniform float uAmbient;
       uniform float uDiffuse;
+      uniform float uSheen;
       uniform sampler2D uDiffuseTexture;
 
       void main() {
@@ -490,6 +498,11 @@ export class WebGLRenderer {
 
         vec3 ambientColor = baseColor * uAmbient;
         vec3 diffuseColor = vec3(0.0);
+        vec3 specularColor = vec3(0.0);
+        float sheen = clamp(uSheen, 0.0, 1.0);
+        float specularWeight = sheen * sheen;
+        float specularExponent = 4.0 + sheen * 96.0;
+        vec3 viewDirection = normalize(uCameraPosition - vWorldPosition);
 
         for (int index = 0; index < 4; index += 1) {
           if (index >= uLightCount) {
@@ -514,9 +527,16 @@ export class WebGLRenderer {
           }
           float litStrength = diffuse * uDiffuse * attenuation * uLightIntensities[index] * shadow;
           diffuseColor += baseColor * uLightColors[index] * litStrength;
+
+          if (specularWeight > 0.0 && diffuse > 0.0) {
+            vec3 halfVector = normalize(lightDirection + viewDirection);
+            float specularDot = max(dot(vNormal, halfVector), 0.0);
+            float specularStrength = pow(specularDot, specularExponent) * specularWeight * attenuation * uLightIntensities[index] * shadow;
+            specularColor += uLightColors[index] * specularStrength;
+          }
         }
 
-        gl_FragColor = vec4(ambientColor + diffuseColor, 1.0);
+        gl_FragColor = vec4(ambientColor + diffuseColor + specularColor, 1.0);
       }
     `
 
@@ -543,12 +563,14 @@ export class WebGLRenderer {
 
     this.uViewLocation = this.requireUniform('uView')
     this.uProjectionLocation = this.requireUniform('uProjection')
+    this.uCameraPositionLocation = this.requireUniform('uCameraPosition')
     this.uLightCountLocation = this.requireUniform('uLightCount')
     this.uLightPositionsLocation = this.requireUniform('uLightPositions')
     this.uLightColorsLocation = this.requireUniform('uLightColors')
     this.uLightIntensitiesLocation = this.requireUniform('uLightIntensities')
     this.uAmbientLocation = this.requireUniform('uAmbient')
     this.uDiffuseLocation = this.requireUniform('uDiffuse')
+    this.uSheenLocation = this.requireUniform('uSheen')
     this.uDiffuseTextureLocation = this.requireUniform('uDiffuseTexture')
 
     const texture = this.gl.createTexture()
@@ -651,6 +673,7 @@ export class WebGLRenderer {
 
     gl.uniformMatrix4fv(this.uViewLocation, false, viewMatrix)
     gl.uniformMatrix4fv(this.uProjectionLocation, false, projectionMatrix)
+    gl.uniform3f(this.uCameraPositionLocation, scene.cameraPosition[0], scene.cameraPosition[1], scene.cameraPosition[2])
     const lightCount = Math.min(MAX_POINT_LIGHTS, scene.lights.length)
     this.lightPositionsArray.fill(0)
     this.lightColorsArray.fill(0)
@@ -674,6 +697,7 @@ export class WebGLRenderer {
     gl.uniform1fv(this.uLightIntensitiesLocation, this.lightIntensitiesArray)
     gl.uniform1f(this.uAmbientLocation, 0)
     gl.uniform1f(this.uDiffuseLocation, 0.95)
+    gl.uniform1f(this.uSheenLocation, Math.max(0, Math.min(1, scene.sheen)))
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, this.diffuseTexture)
     gl.uniform1i(this.uDiffuseTextureLocation, 0)
