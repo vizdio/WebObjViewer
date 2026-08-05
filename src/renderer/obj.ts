@@ -21,7 +21,7 @@ export interface ParsedMtlMaterial {
   diffuseMapPath?: string
 }
 
-function normalizeResourceName(pathLike: string): string {
+export function normalizeResourceName(pathLike: string): string {
   const normalized = pathLike.replace(/\\/g, '/').trim().toLowerCase()
   const parts = normalized.split('/')
   return parts[parts.length - 1] ?? normalized

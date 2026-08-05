@@ -3,6 +3,7 @@ import './App.css'
 import type { Mesh } from './renderer/mesh'
 import {
   parseMtlMaterials,
+  normalizeResourceName,
   parseObjMaterialLibraries,
   parseObjMesh,
   type ParsedMtlMaterial,
@@ -74,17 +75,11 @@ const INITIAL_OBJECT_SETTINGS: ObjectSettings = {
 const CAMERA_Z = 7
 const MAX_LIGHT_Z = CAMERA_Z - 0.1
 const MIN_RENDER_QUALITY = 0.5
-const MAX_RENDER_QUALITY = 1.5
+const MAX_RENDER_QUALITY = 2
 const MIN_SHADOW_QUALITY = 0
 const MAX_SHADOW_QUALITY = 2
 const MIN_SMOOTHING_ANGLE = 0
 const MAX_SMOOTHING_ANGLE = 180
-
-function normalizeResourceName(pathLike: string): string {
-  const normalized = pathLike.replace(/\\/g, '/').trim().toLowerCase()
-  const parts = normalized.split('/')
-  return parts[parts.length - 1] ?? normalized
-}
 
 function isTextureFile(fileName: string): boolean {
   const normalized = fileName.toLowerCase()
@@ -173,7 +168,7 @@ function normalizeMeshForViewport(mesh: Mesh): Mesh {
 }
 
 type RendererBackend = {
-  resize: (width: number, height: number, devicePixelRatio: number, renderScale: number) => void
+  resize: (width: number, height: number, devicePixelRatio: number, renderScale: number) => boolean
   render: (scene: any) => void
   dispose: () => void
 }
@@ -281,9 +276,18 @@ function App() {
     rendererRef.current = renderer
     setStatus(backendStatus)
 
+    let cachedCssWidth = 0
+    let cachedCssHeight = 0
+    let appliedDevicePixelRatio = 0
+    let appliedRenderQuality = -1
+
     const resizeCanvas = () => {
       const { width, height } = canvas.getBoundingClientRect()
-      renderer.resize(width, height, window.devicePixelRatio || 1, renderQualityRef.current)
+      cachedCssWidth = width
+      cachedCssHeight = height
+      appliedDevicePixelRatio = window.devicePixelRatio || 1
+      appliedRenderQuality = renderQualityRef.current
+      renderer.resize(width, height, appliedDevicePixelRatio, appliedRenderQuality)
     }
 
     resizeCanvas()
@@ -338,7 +342,16 @@ function App() {
         safePrimaryLightPosition[2],
       ])
 
-      resizeCanvas()
+      const currentDevicePixelRatio = window.devicePixelRatio || 1
+      const currentRenderQuality = renderQualityRef.current
+      if (
+        currentDevicePixelRatio !== appliedDevicePixelRatio ||
+        currentRenderQuality !== appliedRenderQuality
+      ) {
+        appliedDevicePixelRatio = currentDevicePixelRatio
+        appliedRenderQuality = currentRenderQuality
+        renderer.resize(cachedCssWidth, cachedCssHeight, currentDevicePixelRatio, currentRenderQuality)
+      }
 
       renderer.render({
         objects: sceneRef.current.getRenderableObjects(),

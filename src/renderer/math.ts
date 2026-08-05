@@ -1,21 +1,10 @@
 export type Vec3 = [number, number, number]
 export type Mat4 = Float32Array
 
-export function vec3(x: number, y: number, z: number): Vec3 {
-  return [x, y, z]
-}
-
-export function addVec3(a: Vec3, b: Vec3): Vec3 {
-  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
 export function subVec3(a: Vec3, b: Vec3): Vec3 {
   return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-export function scaleVec3(value: Vec3, factor: number): Vec3 {
-  return [value[0] * factor, value[1] * factor, value[2] * factor]
-}
 
 export function dotVec3(a: Vec3, b: Vec3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
@@ -178,18 +167,6 @@ export function transformPoint(mat: Mat4, point: Vec3): Vec3 {
     mat[0] * x + mat[4] * y + mat[8] * z + mat[12],
     mat[1] * x + mat[5] * y + mat[9] * z + mat[13],
     mat[2] * x + mat[6] * y + mat[10] * z + mat[14],
-  ]
-}
-
-export function transformDirection(mat: Mat4, direction: Vec3): Vec3 {
-  const x = direction[0]
-  const y = direction[1]
-  const z = direction[2]
-
-  return [
-    mat[0] * x + mat[4] * y + mat[8] * z,
-    mat[1] * x + mat[5] * y + mat[9] * z,
-    mat[2] * x + mat[6] * y + mat[10] * z,
   ]
 }
 

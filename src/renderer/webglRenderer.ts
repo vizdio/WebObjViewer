@@ -1,8 +1,17 @@
 import type { Vec3 } from './math'
-import { composeTransformMat4, createLookAtMat4, normalizeVec3, subVec3, transformPoint } from './math'
+import {
+  composeTransformMat4,
+  createLookAtMat4,
+  dotVec3,
+  normalizeVec3,
+  subVec3,
+  transformPoint,
+} from './math'
+import { hexToRgb } from './color'
 import type { Mesh, SceneObject } from './mesh'
 import { computePointLightShadowVisibility } from './shadows'
 import type { ObjectShadowVisibility } from './shadows'
+import { buildShadowCacheKey, buildVertexCacheKey } from './renderCache'
 
 export interface RenderScene {
   objects: SceneObject[]
@@ -65,7 +74,11 @@ function computeTriangleSmoothNormals(
 
       for (const adjacentFaceIndex of adjacentFaces) {
         const candidateNormal = faceNormals[adjacentFaceIndex]
-        if (candidateNormal !== undefined && baseNormal !== undefined && dot(baseNormal, candidateNormal) >= cosineThreshold) {
+        if (
+          candidateNormal !== undefined &&
+          baseNormal !== undefined &&
+          dotVec3(baseNormal, candidateNormal) >= cosineThreshold
+        ) {
           sumX += candidateNormal[0]
           sumY += candidateNormal[1]
           sumZ += candidateNormal[2]
@@ -85,10 +98,6 @@ function computeTriangleSmoothNormals(
   return smoothTriangleNormals
 }
 
-function dot(a: Vec3, b: Vec3): number {
-  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
 interface DrawVertex {
   position: Vec3
   normal: Vec3
@@ -102,23 +111,6 @@ interface DrawVertex {
 }
 
 const MAX_POINT_LIGHTS = 4
-
-function hexToRgb(color: string): [number, number, number] {
-  const normalized = color.trim().replace('#', '')
-
-  if (normalized.length === 3) {
-    const red = Number.parseInt(normalized[0] + normalized[0], 16)
-    const green = Number.parseInt(normalized[1] + normalized[1], 16)
-    const blue = Number.parseInt(normalized[2] + normalized[2], 16)
-    return [red, green, blue]
-  }
-
-  return [
-    Number.parseInt(normalized.slice(0, 2), 16),
-    Number.parseInt(normalized.slice(2, 4), 16),
-    Number.parseInt(normalized.slice(4, 6), 16),
-  ]
-}
 
 function createShader(gl: WebGLRenderingContext, type: number, source: string): WebGLShader {
   const shader = gl.createShader(type)
@@ -368,11 +360,47 @@ export class WebGLRenderer {
 
   private currentScale = 1
 
+  // --- Shadow visibility cache ---
+  private cachedShadowKey = ''
+
+  private cachedShadowVisibility: ObjectShadowVisibility[] | null = null
+
+  // --- Vertex data cache ---
+  private cachedVertexKey = ''
+
+  private cachedVertexCount = 0
+
+  // --- Reusable uniform arrays (fixed size, never need to grow) ---
+  private lightPositionsArray = new Float32Array(MAX_POINT_LIGHTS * 3)
+
+  private lightColorsArray = new Float32Array(MAX_POINT_LIGHTS * 3)
+
+  private lightIntensitiesArray = new Float32Array(MAX_POINT_LIGHTS)
+
+  // --- Reusable vertex attribute arrays (grow as needed) ---
+  private positionsArray: Float32Array<ArrayBufferLike> = new Float32Array(0)
+
+  private normalsArray: Float32Array<ArrayBufferLike> = new Float32Array(0)
+
+  private colorsArray: Float32Array<ArrayBufferLike> = new Float32Array(0)
+
+  private uvArray: Float32Array<ArrayBufferLike> = new Float32Array(0)
+
+  private useTextureArray: Float32Array<ArrayBufferLike> = new Float32Array(0)
+
+  private emissiveArray: Float32Array<ArrayBufferLike> = new Float32Array(0)
+
+  private objectCentersArray: Float32Array<ArrayBufferLike> = new Float32Array(0)
+
+  private twoSidedArray: Float32Array<ArrayBufferLike> = new Float32Array(0)
+
+  private shadowMasksArray: Float32Array<ArrayBufferLike> = new Float32Array(0)
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas
     const context = canvas.getContext('webgl', {
       alpha: false,
-      antialias: false,
+      antialias: true,
       depth: true,
       premultipliedAlpha: false,
       preserveDrawingBuffer: false,
@@ -570,7 +598,7 @@ export class WebGLRenderer {
     return location
   }
 
-  resize(cssWidth: number, cssHeight: number, devicePixelRatio: number, renderScale: number): void {
+  resize(cssWidth: number, cssHeight: number, devicePixelRatio: number, renderScale: number): boolean {
     const normalizedScale = Math.max(0.5, Math.min(1.5, renderScale))
     const pixelWidth = Math.max(1, Math.floor(cssWidth * devicePixelRatio * normalizedScale))
     const pixelHeight = Math.max(1, Math.floor(cssHeight * devicePixelRatio * normalizedScale))
@@ -580,7 +608,7 @@ export class WebGLRenderer {
       pixelHeight === this.currentHeight &&
       normalizedScale === this.currentScale
     ) {
-      return
+      return false
     }
 
     this.currentScale = normalizedScale
@@ -589,9 +617,15 @@ export class WebGLRenderer {
     this.canvas.width = pixelWidth
     this.canvas.height = pixelHeight
     this.gl.viewport(0, 0, pixelWidth, pixelHeight)
+    return true
   }
 
   dispose(): void {
+    this.cachedShadowKey = ''
+    this.cachedShadowVisibility = null
+    this.cachedVertexKey = ''
+    this.cachedVertexCount = 0
+
     const { gl } = this
     gl.deleteBuffer(this.positionBuffer)
     gl.deleteBuffer(this.normalBuffer)
@@ -618,26 +652,26 @@ export class WebGLRenderer {
     gl.uniformMatrix4fv(this.uViewLocation, false, viewMatrix)
     gl.uniformMatrix4fv(this.uProjectionLocation, false, projectionMatrix)
     const lightCount = Math.min(MAX_POINT_LIGHTS, scene.lights.length)
-    const lightPositions = new Float32Array(MAX_POINT_LIGHTS * 3)
-    const lightColors = new Float32Array(MAX_POINT_LIGHTS * 3)
-    const lightIntensities = new Float32Array(MAX_POINT_LIGHTS)
+    this.lightPositionsArray.fill(0)
+    this.lightColorsArray.fill(0)
+    this.lightIntensitiesArray.fill(0)
 
     for (let index = 0; index < lightCount; index += 1) {
       const light = scene.lights[index]
-      lightPositions[index * 3 + 0] = light.position[0]
-      lightPositions[index * 3 + 1] = light.position[1]
-      lightPositions[index * 3 + 2] = light.position[2]
+      this.lightPositionsArray[index * 3 + 0] = light.position[0]
+      this.lightPositionsArray[index * 3 + 1] = light.position[1]
+      this.lightPositionsArray[index * 3 + 2] = light.position[2]
       const [red, green, blue] = hexToRgb(light.color).map((value) => value / 255) as [number, number, number]
-      lightColors[index * 3 + 0] = red
-      lightColors[index * 3 + 1] = green
-      lightColors[index * 3 + 2] = blue
-      lightIntensities[index] = Math.max(0, light.intensity)
+      this.lightColorsArray[index * 3 + 0] = red
+      this.lightColorsArray[index * 3 + 1] = green
+      this.lightColorsArray[index * 3 + 2] = blue
+      this.lightIntensitiesArray[index] = Math.max(0, light.intensity)
     }
 
     gl.uniform1i(this.uLightCountLocation, lightCount)
-    gl.uniform3fv(this.uLightPositionsLocation, lightPositions)
-    gl.uniform3fv(this.uLightColorsLocation, lightColors)
-    gl.uniform1fv(this.uLightIntensitiesLocation, lightIntensities)
+    gl.uniform3fv(this.uLightPositionsLocation, this.lightPositionsArray)
+    gl.uniform3fv(this.uLightColorsLocation, this.lightColorsArray)
+    gl.uniform1fv(this.uLightIntensitiesLocation, this.lightIntensitiesArray)
     gl.uniform1f(this.uAmbientLocation, 0)
     gl.uniform1f(this.uDiffuseLocation, 0.95)
     gl.activeTexture(gl.TEXTURE0)
@@ -648,93 +682,126 @@ export class WebGLRenderer {
     gl.clearColor(background[0], background[1], background[2], 1)
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
-    const shadowVisibilityByObject = computePointLightShadowVisibility(
+    // --- Shadow visibility cache ---
+    // Skip the expensive shadow computation when lights, objects, and
+    // quality settings haven't changed since the previous frame.
+    const shadowKey = buildShadowCacheKey(scene.objects, scene.lights, scene.shadowQuality, scene.smoothShading)
+    let shadowVisibilityByObject = this.cachedShadowVisibility
+    if (shadowKey !== this.cachedShadowKey || shadowVisibilityByObject === null) {
+      shadowVisibilityByObject = computePointLightShadowVisibility(
+        scene.objects,
+        scene.lights,
+        scene.shadowQuality,
+        scene.smoothShading,
+      )
+      this.cachedShadowKey = shadowKey
+      this.cachedShadowVisibility = shadowVisibilityByObject
+    }
+
+    // --- Vertex data cache ---
+    // Skip vertex rebuilding, buffer allocation, and GPU uploads when
+    // the mesh, transform, shadows, and shading settings are unchanged.
+    const vertexKey = buildVertexCacheKey(
       scene.objects,
       scene.lights,
       scene.shadowQuality,
       scene.smoothShading,
+      scene.smoothingAngleThresholdDegrees,
     )
 
-    const vertices: DrawVertex[] = []
-    let activeTextureData: Mesh['textureData'] | undefined
-    for (let objectIndex = 0; objectIndex < scene.objects.length; objectIndex += 1) {
-      const object = scene.objects[objectIndex]
-      if (activeTextureData === undefined && object.mesh.textureData !== undefined) {
-        activeTextureData = object.mesh.textureData
+    if (vertexKey !== this.cachedVertexKey) {
+      const vertices: DrawVertex[] = []
+      let activeTextureData: Mesh['textureData'] | undefined
+      for (let objectIndex = 0; objectIndex < scene.objects.length; objectIndex += 1) {
+        const object = scene.objects[objectIndex]
+        if (activeTextureData === undefined && object.mesh.textureData !== undefined) {
+          activeTextureData = object.mesh.textureData
+        }
+        const objectVertices = buildFaceVertices(
+          object.mesh,
+          object.transform,
+          shadowVisibilityByObject[objectIndex],
+          scene.smoothShading,
+          scene.smoothingAngleThresholdDegrees,
+        )
+        for (const vertex of objectVertices) {
+          vertices.push(vertex)
+        }
       }
-      const objectVertices = buildFaceVertices(
-        object.mesh,
-        object.transform,
-        shadowVisibilityByObject[objectIndex],
-        scene.smoothShading,
-        scene.smoothingAngleThresholdDegrees,
-      )
-      for (const vertex of objectVertices) {
-        vertices.push(vertex)
+
+      this.uploadDiffuseTexture(activeTextureData)
+      this.cachedVertexCount = vertices.length
+
+      const vCount = vertices.length
+      this.positionsArray = this.ensureArrayCapacity(this.positionsArray, vCount * 3)
+      this.normalsArray = this.ensureArrayCapacity(this.normalsArray, vCount * 3)
+      this.colorsArray = this.ensureArrayCapacity(this.colorsArray, vCount * 3)
+      this.uvArray = this.ensureArrayCapacity(this.uvArray, vCount * 2)
+      this.useTextureArray = this.ensureArrayCapacity(this.useTextureArray, vCount)
+      this.emissiveArray = this.ensureArrayCapacity(this.emissiveArray, vCount)
+      this.objectCentersArray = this.ensureArrayCapacity(this.objectCentersArray, vCount * 3)
+      this.twoSidedArray = this.ensureArrayCapacity(this.twoSidedArray, vCount)
+      this.shadowMasksArray = this.ensureArrayCapacity(this.shadowMasksArray, vCount * 4)
+
+      for (let index = 0; index < vCount; index += 1) {
+        const vertex = vertices[index]
+        this.positionsArray[index * 3 + 0] = vertex.position[0]
+        this.positionsArray[index * 3 + 1] = vertex.position[1]
+        this.positionsArray[index * 3 + 2] = vertex.position[2]
+        this.normalsArray[index * 3 + 0] = vertex.normal[0]
+        this.normalsArray[index * 3 + 1] = vertex.normal[1]
+        this.normalsArray[index * 3 + 2] = vertex.normal[2]
+        this.colorsArray[index * 3 + 0] = vertex.color[0] / 255
+        this.colorsArray[index * 3 + 1] = vertex.color[1] / 255
+        this.colorsArray[index * 3 + 2] = vertex.color[2] / 255
+        this.uvArray[index * 2 + 0] = vertex.uv[0]
+        this.uvArray[index * 2 + 1] = vertex.uv[1]
+        this.useTextureArray[index] = vertex.useTexture
+        this.emissiveArray[index] = vertex.emissive
+        this.objectCentersArray[index * 3 + 0] = vertex.objectCenter[0]
+        this.objectCentersArray[index * 3 + 1] = vertex.objectCenter[1]
+        this.objectCentersArray[index * 3 + 2] = vertex.objectCenter[2]
+        this.twoSidedArray[index] = vertex.twoSided
+        this.shadowMasksArray[index * 4 + 0] = vertex.shadowMask[0]
+        this.shadowMasksArray[index * 4 + 1] = vertex.shadowMask[1]
+        this.shadowMasksArray[index * 4 + 2] = vertex.shadowMask[2]
+        this.shadowMasksArray[index * 4 + 3] = vertex.shadowMask[3]
       }
+
+      this.uploadArray(this.positionBuffer, this.positionsArray.subarray(0, vCount * 3))
+      this.uploadArray(this.normalBuffer, this.normalsArray.subarray(0, vCount * 3))
+      this.uploadArray(this.colorBuffer, this.colorsArray.subarray(0, vCount * 3))
+      this.uploadArray(this.uvBuffer, this.uvArray.subarray(0, vCount * 2))
+      this.uploadArray(this.useTextureBuffer, this.useTextureArray.subarray(0, vCount))
+      this.uploadArray(this.emissiveBuffer, this.emissiveArray.subarray(0, vCount))
+      this.uploadArray(this.objectCenterBuffer, this.objectCentersArray.subarray(0, vCount * 3))
+      this.uploadArray(this.twoSidedBuffer, this.twoSidedArray.subarray(0, vCount))
+      this.uploadArray(this.shadowMaskBuffer, this.shadowMasksArray.subarray(0, vCount * 4))
+
+      this.bindAttribute(this.positionBuffer, this.positionLocation, 3)
+      this.bindAttribute(this.normalBuffer, this.normalLocation, 3)
+      this.bindAttribute(this.colorBuffer, this.colorLocation, 3)
+      this.bindAttribute(this.uvBuffer, this.uvLocation, 2)
+      this.bindAttribute(this.useTextureBuffer, this.useTextureLocation, 1)
+      this.bindAttribute(this.emissiveBuffer, this.emissiveLocation, 1)
+      this.bindAttribute(this.objectCenterBuffer, this.objectCenterLocation, 3)
+      this.bindAttribute(this.twoSidedBuffer, this.twoSidedLocation, 1)
+      this.bindAttribute(this.shadowMaskBuffer, this.shadowMaskLocation, 4)
+
+      this.cachedVertexKey = vertexKey
     }
 
-    this.uploadDiffuseTexture(activeTextureData)
-
-    const positions = new Float32Array(vertices.length * 3)
-    const normals = new Float32Array(vertices.length * 3)
-    const colors = new Float32Array(vertices.length * 3)
-    const uv = new Float32Array(vertices.length * 2)
-    const useTexture = new Float32Array(vertices.length)
-    const emissive = new Float32Array(vertices.length)
-    const objectCenters = new Float32Array(vertices.length * 3)
-    const twoSided = new Float32Array(vertices.length)
-    const shadowMasks = new Float32Array(vertices.length * 4)
-
-    for (let index = 0; index < vertices.length; index += 1) {
-      const vertex = vertices[index]
-      positions[index * 3 + 0] = vertex.position[0]
-      positions[index * 3 + 1] = vertex.position[1]
-      positions[index * 3 + 2] = vertex.position[2]
-      normals[index * 3 + 0] = vertex.normal[0]
-      normals[index * 3 + 1] = vertex.normal[1]
-      normals[index * 3 + 2] = vertex.normal[2]
-      colors[index * 3 + 0] = vertex.color[0] / 255
-      colors[index * 3 + 1] = vertex.color[1] / 255
-      colors[index * 3 + 2] = vertex.color[2] / 255
-      uv[index * 2 + 0] = vertex.uv[0]
-      uv[index * 2 + 1] = vertex.uv[1]
-      useTexture[index] = vertex.useTexture
-      emissive[index] = vertex.emissive
-      objectCenters[index * 3 + 0] = vertex.objectCenter[0]
-      objectCenters[index * 3 + 1] = vertex.objectCenter[1]
-      objectCenters[index * 3 + 2] = vertex.objectCenter[2]
-      twoSided[index] = vertex.twoSided
-      shadowMasks[index * 4 + 0] = vertex.shadowMask[0]
-      shadowMasks[index * 4 + 1] = vertex.shadowMask[1]
-      shadowMasks[index * 4 + 2] = vertex.shadowMask[2]
-      shadowMasks[index * 4 + 3] = vertex.shadowMask[3]
-    }
-
-    this.uploadArray(this.positionBuffer, positions)
-    this.uploadArray(this.normalBuffer, normals)
-    this.uploadArray(this.colorBuffer, colors)
-    this.uploadArray(this.uvBuffer, uv)
-    this.uploadArray(this.useTextureBuffer, useTexture)
-    this.uploadArray(this.emissiveBuffer, emissive)
-    this.uploadArray(this.objectCenterBuffer, objectCenters)
-    this.uploadArray(this.twoSidedBuffer, twoSided)
-    this.uploadArray(this.shadowMaskBuffer, shadowMasks)
-
-    this.bindAttribute(this.positionBuffer, this.positionLocation, 3)
-    this.bindAttribute(this.normalBuffer, this.normalLocation, 3)
-    this.bindAttribute(this.colorBuffer, this.colorLocation, 3)
-    this.bindAttribute(this.uvBuffer, this.uvLocation, 2)
-    this.bindAttribute(this.useTextureBuffer, this.useTextureLocation, 1)
-    this.bindAttribute(this.emissiveBuffer, this.emissiveLocation, 1)
-    this.bindAttribute(this.objectCenterBuffer, this.objectCenterLocation, 3)
-    this.bindAttribute(this.twoSidedBuffer, this.twoSidedLocation, 1)
-    this.bindAttribute(this.shadowMaskBuffer, this.shadowMaskLocation, 4)
-
-    gl.drawArrays(gl.TRIANGLES, 0, vertices.length)
+    gl.drawArrays(gl.TRIANGLES, 0, this.cachedVertexCount)
   }
 
-  private uploadArray(buffer: WebGLBuffer, data: Float32Array): void {
+  private ensureArrayCapacity(buffer: Float32Array, requiredSize: number) {
+    if (buffer.length >= requiredSize) {
+      return buffer
+    }
+    return new Float32Array(Math.max(requiredSize, buffer.length * 2, 1024))
+  }
+
+  private uploadArray(buffer: WebGLBuffer, data: ArrayBufferView): void {
     const { gl } = this
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
     gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW)

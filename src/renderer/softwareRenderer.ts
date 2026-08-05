@@ -6,9 +6,11 @@ import {
   normalizeVec3,
   transformPoint,
 } from './math'
+import { hexToRgb } from './color'
 import type { Mesh, SceneObject } from './mesh'
 import { computePointLightShadowVisibility } from './shadows'
 import type { ObjectShadowVisibility } from './shadows'
+import { buildObjectCacheKey, buildShadowCacheKey } from './renderCache'
 
 export interface RenderScene {
   objects: SceneObject[]
@@ -33,21 +35,12 @@ interface ProjectedVertex {
   depth: number
 }
 
-function hexToRgb(color: string): [number, number, number] {
-  const normalized = color.trim().replace('#', '')
-
-  if (normalized.length === 3) {
-    const red = Number.parseInt(normalized[0] + normalized[0], 16)
-    const green = Number.parseInt(normalized[1] + normalized[1], 16)
-    const blue = Number.parseInt(normalized[2] + normalized[2], 16)
-    return [red, green, blue]
-  }
-
-  return [
-    Number.parseInt(normalized.slice(0, 2), 16),
-    Number.parseInt(normalized.slice(2, 4), 16),
-    Number.parseInt(normalized.slice(4, 6), 16),
-  ]
+interface ResolvedLight {
+  position: Vec3
+  intensity: number
+  red: number
+  green: number
+  blue: number
 }
 
 function packRgba(red: number, green: number, blue: number, alpha = 255): number {
@@ -176,6 +169,13 @@ function computeSmoothedVertexNormals(
   return smoothTriangleNormals
 }
 
+interface ObjectCacheEntry {
+  key: string
+  transformedVertices: Vec3[]
+  projectedVertices: ProjectedVertex[]
+  smoothNormals: Array<[Vec3, Vec3, Vec3]> | null
+}
+
 export class SoftwareRenderer {
   private readonly context: CanvasRenderingContext2D
 
@@ -195,6 +195,14 @@ export class SoftwareRenderer {
 
   private renderScale = 1
 
+  // --- Shadow visibility cache ---
+  private cachedShadowKey = ''
+
+  private cachedShadowVisibility: ObjectShadowVisibility[] | null = null
+
+  // --- Per-object vertex/normal cache ---
+  private objectCache: Map<number, ObjectCacheEntry> = new Map()
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas
     const context = canvas.getContext('2d', { alpha: false, desynchronized: true })
@@ -206,7 +214,7 @@ export class SoftwareRenderer {
     this.context = context
   }
 
-  resize(cssWidth: number, cssHeight: number, devicePixelRatio: number, renderScale: number): void {
+  resize(cssWidth: number, cssHeight: number, devicePixelRatio: number, renderScale: number): boolean {
     const normalizedScale = Math.max(0.5, Math.min(1.5, renderScale))
     const pixelWidth = Math.max(1, Math.floor(cssWidth * devicePixelRatio * normalizedScale))
     const pixelHeight = Math.max(1, Math.floor(cssHeight * devicePixelRatio * normalizedScale))
@@ -217,7 +225,7 @@ export class SoftwareRenderer {
       this.devicePixelRatio === devicePixelRatio &&
       this.renderScale === normalizedScale
     ) {
-      return
+      return false
     }
 
     this.devicePixelRatio = devicePixelRatio
@@ -230,12 +238,18 @@ export class SoftwareRenderer {
     this.imageData = this.context.createImageData(pixelWidth, pixelHeight)
     this.colorBuffer = new Uint32Array(this.imageData.data.buffer)
     this.depthBuffer = new Float32Array(pixelWidth * pixelHeight)
+
+    this.objectCache.clear()
+    return true
   }
 
   dispose(): void {
     this.imageData = null
     this.colorBuffer = null
     this.depthBuffer = null
+    this.cachedShadowKey = ''
+    this.cachedShadowVisibility = null
+    this.objectCache.clear()
   }
 
   render(scene: RenderScene): void {
@@ -251,21 +265,39 @@ export class SoftwareRenderer {
     const cameraMatrix = createLookAtMat4(scene.cameraPosition, scene.cameraTarget, scene.cameraUp)
     const aspectRatio = width / height
     const diffuseWeight = 0.95
-    const shadowVisibilityByObject = computePointLightShadowVisibility(
-      scene.objects,
-      scene.lights,
-      scene.shadowQuality,
-      scene.smoothShading,
-    )
+    const resolvedLights: ResolvedLight[] = scene.lights.map((light) => {
+      const [red, green, blue] = hexToRgb(light.color)
+      return {
+        position: light.position,
+        intensity: Math.max(0, light.intensity),
+        red: red / 255,
+        green: green / 255,
+        blue: blue / 255,
+      }
+    })
+    const shadowKey = buildShadowCacheKey(scene.objects, scene.lights, scene.shadowQuality, scene.smoothShading)
+    let shadowVisibilityByObject = this.cachedShadowVisibility
+    if (shadowKey !== this.cachedShadowKey || shadowVisibilityByObject === null) {
+      shadowVisibilityByObject = computePointLightShadowVisibility(
+        scene.objects,
+        scene.lights,
+        scene.shadowQuality,
+        scene.smoothShading,
+      )
+      this.cachedShadowKey = shadowKey
+      this.cachedShadowVisibility = shadowVisibilityByObject
+    }
+    const shadowVisibility = shadowVisibilityByObject
 
     for (let objectIndex = 0; objectIndex < scene.objects.length; objectIndex += 1) {
       const object = scene.objects[objectIndex]
       this.drawObject(
+        objectIndex,
         object.mesh,
         object.transform,
         scene.cameraPosition,
-        scene.lights,
-        shadowVisibilityByObject[objectIndex],
+        resolvedLights,
+        shadowVisibility[objectIndex],
         scene.smoothShading,
         scene.smoothingAngleThresholdDegrees,
         cameraMatrix,
@@ -279,10 +311,11 @@ export class SoftwareRenderer {
   }
 
   private drawObject(
+    objectIndex: number,
     mesh: Mesh,
     transform: SceneObject['transform'],
     cameraPosition: Vec3,
-    lights: RenderScene['lights'],
+    lights: ResolvedLight[],
     shadowVisibility: ObjectShadowVisibility,
     smoothShading: boolean,
     smoothingAngleThresholdDegrees: number,
@@ -295,24 +328,30 @@ export class SoftwareRenderer {
       return
     }
 
-    const modelMatrix = composeTransformMat4(transform.position, transform.rotation, transform.scale)
-    const transformedVertices: Vec3[] = []
-    const projectedVertices: ProjectedVertex[] = []
+    // --- Per-object cache: transform vertices + project + compute normals ---
+    const cacheKey = buildObjectCacheKey(mesh, transform, smoothingAngleThresholdDegrees)
+    let cacheEntry = this.objectCache.get(objectIndex)
+    if (cacheEntry === undefined || cacheEntry.key !== cacheKey) {
+      const modelMatrix = composeTransformMat4(transform.position, transform.rotation, transform.scale)
+      const transformedVertices: Vec3[] = []
+      const projectedVertices: ProjectedVertex[] = []
 
-    for (const vertex of mesh.vertices) {
-      const worldPoint = transformPoint(modelMatrix, vertex)
-      const viewPoint = transformPoint(cameraMatrix, worldPoint)
-      transformedVertices.push(worldPoint)
-      projectedVertices.push(projectVertex(viewPoint, fieldOfView, aspectRatio, this.width, this.height))
+      for (const vertex of mesh.vertices) {
+        const worldPoint = transformPoint(modelMatrix, vertex)
+        const viewPoint = transformPoint(cameraMatrix, worldPoint)
+        transformedVertices.push(worldPoint)
+        projectedVertices.push(projectVertex(viewPoint, fieldOfView, aspectRatio, this.width, this.height))
+      }
+
+      const smoothNormals = smoothShading
+        ? computeSmoothedVertexNormals(transformedVertices, mesh.triangles, smoothingAngleThresholdDegrees)
+        : null
+
+      cacheEntry = { key: cacheKey, transformedVertices, projectedVertices, smoothNormals }
+      this.objectCache.set(objectIndex, cacheEntry)
     }
 
-    const smoothNormals = smoothShading
-      ? computeSmoothedVertexNormals(
-          transformedVertices,
-          mesh.triangles,
-          smoothingAngleThresholdDegrees,
-        )
-      : null
+    const { transformedVertices, projectedVertices, smoothNormals } = cacheEntry
 
     for (let triangleIndex = 0; triangleIndex < mesh.triangles.length; triangleIndex += 1) {
       const [indexA, indexB, indexC] = mesh.triangles[triangleIndex]
@@ -393,11 +432,10 @@ export class SoftwareRenderer {
             3
           : shadowVisibility.flat[triangleIndex]?.[lightIndex] ?? 1
         const diffuseLighting =
-          lambert * diffuseWeight * attenuation * Math.max(0, light.intensity) * shadow
-        const [lightRed, lightGreen, lightBlue] = hexToRgb(light.color)
-        lightMultiplierRed += (lightRed / 255) * diffuseLighting
-        lightMultiplierGreen += (lightGreen / 255) * diffuseLighting
-        lightMultiplierBlue += (lightBlue / 255) * diffuseLighting
+          lambert * diffuseWeight * attenuation * light.intensity * shadow
+        lightMultiplierRed += light.red * diffuseLighting
+        lightMultiplierGreen += light.green * diffuseLighting
+        lightMultiplierBlue += light.blue * diffuseLighting
       }
 
       const triangleUv = mesh.triangleTextureCoords?.[triangleIndex] ?? null
@@ -458,45 +496,63 @@ export class SoftwareRenderer {
 
     const inverseArea = 1 / triangleArea
     const winding = triangleArea > 0 ? 1 : -1
+    const width = this.width
+
+    // Precompute edge function step values for incremental evaluation
+    const stepA_X = vertexC.y - vertexB.y
+    const stepA_Y = vertexB.x - vertexC.x
+    const stepB_X = vertexA.y - vertexC.y
+    const stepB_Y = vertexC.x - vertexA.x
+    const stepC_X = vertexC.y - vertexA.y
+    const stepC_Y = vertexA.x - vertexC.x
+
+    const startX = minX + 0.5
+    const startY = minY + 0.5
+    let rowWeightA = edgeFunction(vertexB.x, vertexB.y, vertexC.x, vertexC.y, startX, startY)
+    let rowWeightB = edgeFunction(vertexC.x, vertexC.y, vertexA.x, vertexA.y, startX, startY)
+    let rowWeightC = edgeFunction(vertexA.x, vertexA.y, vertexB.x, vertexB.y, startX, startY)
 
     for (let y = minY; y <= maxY; y += 1) {
+      let weightA = rowWeightA
+      let weightB = rowWeightB
+      let weightC = rowWeightC
+      const rowOffset = y * width
+
       for (let x = minX; x <= maxX; x += 1) {
-        const sampleX = x + 0.5
-        const sampleY = y + 0.5
-        const weightA = edgeFunction(vertexB.x, vertexB.y, vertexC.x, vertexC.y, sampleX, sampleY)
-        const weightB = edgeFunction(vertexC.x, vertexC.y, vertexA.x, vertexA.y, sampleX, sampleY)
-        const weightC = edgeFunction(vertexA.x, vertexA.y, vertexB.x, vertexB.y, sampleX, sampleY)
+        if (weightA * winding >= 0 && weightB * winding >= 0 && weightC * winding >= 0) {
+          const normalizedA = weightA * inverseArea
+          const normalizedB = weightB * inverseArea
+          const normalizedC = weightC * inverseArea
+          const depth = vertexA.depth * normalizedA + vertexB.depth * normalizedB + vertexC.depth * normalizedC
+          const bufferIndex = rowOffset + x
 
-        if (weightA * winding < 0 || weightB * winding < 0 || weightC * winding < 0) {
-          continue
+          if (depth < this.depthBuffer[bufferIndex]) {
+            const interpolatedU =
+              uv[0][0] * normalizedA + uv[1][0] * normalizedB + uv[2][0] * normalizedC
+            const interpolatedV =
+              uv[0][1] * normalizedA + uv[1][1] * normalizedB + uv[2][1] * normalizedC
+            const [baseRed, baseGreen, baseBlue] = sampleTexturePixel(texture, interpolatedU, interpolatedV)
+            const shadedRed = Math.min(255, baseRed * lightRed)
+            const shadedGreen = Math.min(255, baseGreen * lightGreen)
+            const shadedBlue = Math.min(255, baseBlue * lightBlue)
+
+            this.depthBuffer[bufferIndex] = depth
+            this.colorBuffer[bufferIndex] = packRgba(
+              Math.round(shadedRed),
+              Math.round(shadedGreen),
+              Math.round(shadedBlue),
+            )
+          }
         }
 
-        const normalizedA = weightA * inverseArea
-        const normalizedB = weightB * inverseArea
-        const normalizedC = weightC * inverseArea
-        const depth = vertexA.depth * normalizedA + vertexB.depth * normalizedB + vertexC.depth * normalizedC
-        const bufferIndex = y * this.width + x
-
-        if (depth >= this.depthBuffer[bufferIndex]) {
-          continue
-        }
-
-        const interpolatedU =
-          uv[0][0] * normalizedA + uv[1][0] * normalizedB + uv[2][0] * normalizedC
-        const interpolatedV =
-          uv[0][1] * normalizedA + uv[1][1] * normalizedB + uv[2][1] * normalizedC
-        const [baseRed, baseGreen, baseBlue] = sampleTexturePixel(texture, interpolatedU, interpolatedV)
-        const shadedRed = Math.min(255, baseRed * lightRed)
-        const shadedGreen = Math.min(255, baseGreen * lightGreen)
-        const shadedBlue = Math.min(255, baseBlue * lightBlue)
-
-        this.depthBuffer[bufferIndex] = depth
-        this.colorBuffer[bufferIndex] = packRgba(
-          Math.round(shadedRed),
-          Math.round(shadedGreen),
-          Math.round(shadedBlue),
-        )
+        weightA += stepA_X
+        weightB += stepB_X
+        weightC += stepC_X
       }
+
+      rowWeightA += stepA_Y
+      rowWeightB += stepB_Y
+      rowWeightC += stepC_Y
     }
   }
 
@@ -523,30 +579,50 @@ export class SoftwareRenderer {
 
     const inverseArea = 1 / triangleArea
     const winding = triangleArea > 0 ? 1 : -1
+    const width = this.width
+
+    // Precompute edge function step values for incremental evaluation
+    const stepA_X = vertexC.y - vertexB.y
+    const stepA_Y = vertexB.x - vertexC.x
+    const stepB_X = vertexA.y - vertexC.y
+    const stepB_Y = vertexC.x - vertexA.x
+    const stepC_X = vertexC.y - vertexA.y
+    const stepC_Y = vertexA.x - vertexC.x
+
+    const startX = minX + 0.5
+    const startY = minY + 0.5
+    let rowWeightA = edgeFunction(vertexB.x, vertexB.y, vertexC.x, vertexC.y, startX, startY)
+    let rowWeightB = edgeFunction(vertexC.x, vertexC.y, vertexA.x, vertexA.y, startX, startY)
+    let rowWeightC = edgeFunction(vertexA.x, vertexA.y, vertexB.x, vertexB.y, startX, startY)
 
     for (let y = minY; y <= maxY; y += 1) {
+      let weightA = rowWeightA
+      let weightB = rowWeightB
+      let weightC = rowWeightC
+      const rowOffset = y * width
+
       for (let x = minX; x <= maxX; x += 1) {
-        const sampleX = x + 0.5
-        const sampleY = y + 0.5
-        const weightA = edgeFunction(vertexB.x, vertexB.y, vertexC.x, vertexC.y, sampleX, sampleY)
-        const weightB = edgeFunction(vertexC.x, vertexC.y, vertexA.x, vertexA.y, sampleX, sampleY)
-        const weightC = edgeFunction(vertexA.x, vertexA.y, vertexB.x, vertexB.y, sampleX, sampleY)
+        if (weightA * winding >= 0 && weightB * winding >= 0 && weightC * winding >= 0) {
+          const normalizedA = weightA * inverseArea
+          const normalizedB = weightB * inverseArea
+          const normalizedC = weightC * inverseArea
+          const depth = vertexA.depth * normalizedA + vertexB.depth * normalizedB + vertexC.depth * normalizedC
+          const bufferIndex = rowOffset + x
 
-        if (weightA * winding < 0 || weightB * winding < 0 || weightC * winding < 0) {
-          continue
+          if (depth < this.depthBuffer[bufferIndex]) {
+            this.depthBuffer[bufferIndex] = depth
+            this.colorBuffer[bufferIndex] = packedColor
+          }
         }
 
-        const normalizedA = weightA * inverseArea
-        const normalizedB = weightB * inverseArea
-        const normalizedC = weightC * inverseArea
-        const depth = vertexA.depth * normalizedA + vertexB.depth * normalizedB + vertexC.depth * normalizedC
-        const bufferIndex = y * this.width + x
-
-        if (depth < this.depthBuffer[bufferIndex]) {
-          this.depthBuffer[bufferIndex] = depth
-          this.colorBuffer[bufferIndex] = packedColor
-        }
+        weightA += stepA_X
+        weightB += stepB_X
+        weightC += stepC_X
       }
+
+      rowWeightA += stepA_Y
+      rowWeightB += stepB_Y
+      rowWeightC += stepC_Y
     }
   }
 }
