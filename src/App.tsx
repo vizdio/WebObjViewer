@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import './App.css'
 import type { Mesh } from './renderer/mesh'
 import {
@@ -177,9 +177,15 @@ type RendererBackend = {
   dispose: () => void
 }
 
+const MIN_PANEL_WIDTH = 200
+const MAX_PANEL_WIDTH = 600
+const DEFAULT_PANEL_WIDTH = 300
+
 function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const rendererRef = useRef<RendererBackend | null>(null)
+  const isResizingRef = useRef(false)
+  const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH)
   const sceneRef = useRef(new SceneController(parseObjMesh(dodecahedronObj, 'Dodecahedron', '#ffffff')))
   const primaryLightRef = useRef(INITIAL_LIGHT_SETTINGS)
   const extraLightsRef = useRef<PointLightSettings[]>(INITIAL_EXTRA_LIGHTS)
@@ -642,8 +648,37 @@ function App() {
   const toggleLightingSection = () => setLightingSectionCollapsed((current) => !current)
   const toggleTransformSection = () => setTransformSectionCollapsed((current) => !current)
 
+  const startResize = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    isResizingRef.current = true
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      if (!isResizingRef.current) {
+        return
+      }
+      const newWidth = Math.min(
+        MAX_PANEL_WIDTH,
+        Math.max(MIN_PANEL_WIDTH, moveEvent.clientX),
+      )
+      setPanelWidth(newWidth)
+    }
+
+    const handleMouseUp = () => {
+      isResizingRef.current = false
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+  }
+
   return (
-    <main className="app-shell">
+    <main className="app-shell" style={{ '--panel-width': `${panelWidth}px` } as CSSProperties}>
       <aside className="controls-panel" aria-label="Renderer controls">
         <div className="controls-scroll">
           <label className="slider-field slider-field--wide slider-field--compact file-field">
@@ -1090,6 +1125,14 @@ function App() {
           </section>
         </div>
       </aside>
+
+      <div
+        className="resize-bar"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize controls panel"
+        onMouseDown={startResize}
+      />
 
       <section className="viewport-panel">
         <div className="viewport-header">
