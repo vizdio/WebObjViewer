@@ -249,6 +249,34 @@
   outline-offset: 1px;
 }
 
+.generate-button {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, rgba(125, 211, 252, 0.18) 0%, rgba(134, 239, 172, 0.18) 100%);
+  color: #e0f2fe;
+  font-weight: 700;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: transform 160ms ease, filter 160ms ease, border-color 160ms ease;
+}
+
+.generate-button:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.1);
+  border-color: rgba(125, 211, 252, 0.6);
+}
+
+.generate-button:active {
+  transform: translateY(0);
+  filter: brightness(0.95);
+}
+
 .toggle-field {
   display: flex;
   align-items: center;
@@ -296,6 +324,12 @@
   display: block;
   width: 100%;
   height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+.renderer-canvas:active {
+  cursor: grabbing;
 }
 
 .counter {

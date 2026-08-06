@@ -12,6 +12,7 @@ import {
 import { SceneController } from './renderer/scene'
 import { SoftwareRenderer } from './renderer/softwareRenderer'
 import WebGLRenderer from './renderer/webglRenderer'
+import { OBJECT_GENERATORS, type ObjectGeneratorId } from './renderer/generators'
 import dodecahedronObj from './objects/dodecahedron.obj?raw'
 
 type RendererMode = 'auto' | 'software' | 'gpu'
@@ -208,6 +209,7 @@ function App() {
   const [bumpIntensity, setBumpIntensity] = useState(0.5)
   const [hasBumpMap, setHasBumpMap] = useState(false)
   const [rendererMode, setRendererMode] = useState<RendererMode>('auto')
+  const [selectedGenerator, setSelectedGenerator] = useState<ObjectGeneratorId>('sphere')
   const [qualitySectionCollapsed, setQualitySectionCollapsed] = useState(true)
   const [lightingSectionCollapsed, setLightingSectionCollapsed] = useState(true)
   const [transformSectionCollapsed, setTransformSectionCollapsed] = useState(true)
@@ -218,6 +220,9 @@ function App() {
   const sheenRef = useRef(0.5)
   const bumpIntensityRef = useRef(0.5)
   const demoModeRef = useRef(false)
+  const isDraggingRef = useRef(false)
+  const lastMouseXRef = useRef(0)
+  const lastMouseYRef = useRef(0)
 
   useEffect(() => {
     primaryLightRef.current = primaryLight
@@ -266,6 +271,56 @@ function App() {
   useEffect(() => {
     demoModeRef.current = demoMode
   }, [demoMode])
+
+  useEffect(() => {
+    const handleWindowMouseMove = (event: MouseEvent) => {
+      if (!isDraggingRef.current) {
+        return
+      }
+      const deltaX = event.clientX - lastMouseXRef.current
+      const deltaY = event.clientY - lastMouseYRef.current
+      lastMouseXRef.current = event.clientX
+      lastMouseYRef.current = event.clientY
+
+      setObjectSettings((current) => ({
+        ...current,
+        rotationY: current.rotationY + deltaX * 0.5,
+        rotationX: current.rotationX - deltaY * 0.5,
+      }))
+    }
+
+    const handleWindowMouseUp = () => {
+      isDraggingRef.current = false
+    }
+
+    window.addEventListener('mousemove', handleWindowMouseMove)
+    window.addEventListener('mouseup', handleWindowMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', handleWindowMouseMove)
+      window.removeEventListener('mouseup', handleWindowMouseUp)
+    }
+  }, [])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (canvas === null) {
+      return
+    }
+
+    const handleCanvasWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      const delta = event.deltaY > 0 ? -0.05 : 0.05
+      setObjectSettings((current) => ({
+        ...current,
+        scale: Math.min(3, Math.max(0.2, current.scale + delta)),
+      }))
+    }
+
+    canvas.addEventListener('wheel', handleCanvasWheel, { passive: false })
+    return () => {
+      canvas.removeEventListener('wheel', handleCanvasWheel)
+    }
+  }, [rendererMode])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -506,6 +561,44 @@ function App() {
     setDemoMode(event.target.checked)
   }
 
+  const handleCanvasMouseDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    event.preventDefault()
+    isDraggingRef.current = true
+    lastMouseXRef.current = event.clientX
+    lastMouseYRef.current = event.clientY
+    if (demoModeRef.current) {
+      setDemoMode(false)
+    }
+  }
+
+  const handleGeneratorChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    setSelectedGenerator(event.target.value as ObjectGeneratorId)
+  }
+
+  const handleGenerateObject = () => {
+    const generator = OBJECT_GENERATORS.find((option) => option.id === selectedGenerator)
+    if (generator === undefined) {
+      return
+    }
+
+    const mesh = generator.generate(objectColorRef.current)
+    const normalizedMesh = normalizeMeshForViewport(mesh)
+    setHasBumpMap(false)
+    setModelName(mesh.name)
+    sceneRef.current.setPrimaryMesh(normalizedMesh)
+    setObjectSettings((current) => ({
+      ...current,
+      positionX: INITIAL_OBJECT_SETTINGS.positionX,
+      positionY: INITIAL_OBJECT_SETTINGS.positionY,
+      positionZ: INITIAL_OBJECT_SETTINGS.positionZ,
+      rotationX: INITIAL_OBJECT_SETTINGS.rotationX,
+      rotationY: INITIAL_OBJECT_SETTINGS.rotationY,
+      rotationZ: INITIAL_OBJECT_SETTINGS.rotationZ,
+      scale: INITIAL_OBJECT_SETTINGS.scale,
+    }))
+    setStatus(`Generated ${mesh.name}`)
+  }
+
   const handleObjFileLoad = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? [])
     if (files.length === 0) {
@@ -690,6 +783,51 @@ function App() {
               onChange={handleObjFileLoad}
             />
           </label>
+          <section className="quality-controls" aria-label="Object generation">
+            <div className="light-controls__header">
+              <p className="eyebrow">Generate Object</p>
+            </div>
+            <label className="slider-field slider-field--wide slider-field--compact mode-field">
+              <span>Object type</span>
+              <select value={selectedGenerator} onChange={handleGeneratorChange}>
+                <optgroup label="Primitives">
+                  {OBJECT_GENERATORS.filter((option) => option.category === 'Primitives').map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="Complex">
+                  {OBJECT_GENERATORS.filter((option) => option.category === 'Complex').map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="Fun">
+                  {OBJECT_GENERATORS.filter((option) => option.category === 'Fun').map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="Fractals">
+                  {OBJECT_GENERATORS.filter((option) => option.category === 'Fractals').map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </optgroup>
+              </select>
+            </label>
+            <button
+              type="button"
+              className="generate-button"
+              onClick={handleGenerateObject}
+            >
+              Generate Object
+            </button>
+          </section>
           <section className="quality-controls" aria-label="Render quality">
             <div className="light-controls__header">
               <button
@@ -1146,7 +1284,13 @@ function App() {
         </div>
 
         <div className="canvas-frame">
-          <canvas key={rendererMode} ref={canvasRef} className="renderer-canvas" aria-label="3D renderer viewport" />
+          <canvas
+            key={rendererMode}
+            ref={canvasRef}
+            className="renderer-canvas"
+            aria-label="3D renderer viewport"
+            onMouseDown={handleCanvasMouseDown}
+          />
         </div>
       </section>
     </main>
