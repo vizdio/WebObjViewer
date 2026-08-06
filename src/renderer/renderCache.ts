@@ -56,7 +56,7 @@ export function buildVertexCacheKey(
     const obj = objects[i]
     const t = obj.transform
     const m = obj.mesh
-    key += `|O${m.vertices.length},${m.triangles.length},${m.color},${m.textureData ? 1 : 0}`
+    key += `|O${m.vertices.length},${m.triangles.length},${m.color},${m.textureData ? 1 : 0},${m.bumpMapData ? 1 : 0}`
     key += `;${t.position[0].toFixed(3)},${t.position[1].toFixed(3)},${t.position[2].toFixed(3)}`
     key += `;${t.rotation[0].toFixed(3)},${t.rotation[1].toFixed(3)},${t.rotation[2].toFixed(3)}`
     key += `;${t.scale[0].toFixed(3)}`

@@ -16,6 +16,7 @@ export interface Mesh {
   triangleColors?: string[]
   triangleTextureCoords?: Array<TriangleUv | null>
   textureData?: TextureBufferData
+  bumpMapData?: TextureBufferData
   emissive?: boolean
   doubleSided?: boolean
 }

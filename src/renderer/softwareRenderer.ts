@@ -27,6 +27,7 @@ export interface RenderScene {
   smoothShading: boolean
   smoothingAngleThresholdDegrees: number
   sheen: number
+  bumpIntensity: number
   fieldOfView: number
 }
 
@@ -269,6 +270,7 @@ export class SoftwareRenderer {
     const sheen = Math.max(0, Math.min(1, scene.sheen))
     const specularWeight = sheen * sheen
     const specularExponent = 4 + sheen * 96
+    const bumpIntensity = Math.max(0, Math.min(1, scene.bumpIntensity))
     const resolvedLights: ResolvedLight[] = scene.lights.map((light) => {
       const [red, green, blue] = hexToRgb(light.color)
       return {
@@ -310,6 +312,7 @@ export class SoftwareRenderer {
         diffuseWeight,
         specularWeight,
         specularExponent,
+        bumpIntensity,
       )
     }
 
@@ -331,6 +334,7 @@ export class SoftwareRenderer {
     diffuseWeight: number,
     specularWeight: number,
     specularExponent: number,
+    bumpIntensity: number,
   ): void {
     if (this.colorBuffer === null || this.depthBuffer === null) {
       return
@@ -386,6 +390,50 @@ export class SoftwareRenderer {
             normalA[2] + normalB[2] + normalC[2],
           ])
         }
+      }
+
+      // Apply bump mapping by perturbing the normal based on the bump map
+      // height gradient at the triangle's centroid UV coordinate.
+      const triangleUv = mesh.triangleTextureCoords?.[triangleIndex] ?? null
+      const activeBumpMap = mesh.bumpMapData
+      if (bumpIntensity > 0 && triangleUv !== null && activeBumpMap !== undefined) {
+        const centroidU = (triangleUv[0][0] + triangleUv[1][0] + triangleUv[2][0]) / 3
+        const centroidV = (triangleUv[0][1] + triangleUv[1][1] + triangleUv[2][1]) / 3
+        const wrappedU = ((centroidU % 1) + 1) % 1
+        const wrappedV = ((centroidV % 1) + 1) % 1
+        const texelU = 1 / activeBumpMap.width
+        const texelV = 1 / activeBumpMap.height
+        const sampleHeight = (u: number, v: number): number => {
+          const x = Math.max(0, Math.min(activeBumpMap.width - 1, Math.floor(u * activeBumpMap.width)))
+          const y = Math.max(0, Math.min(activeBumpMap.height - 1, Math.floor((1 - v) * activeBumpMap.height)))
+          const offset = (y * activeBumpMap.width + x) * 4
+          return (activeBumpMap.data[offset] ?? 128) / 255
+        }
+        const heightCenter = sampleHeight(wrappedU, wrappedV)
+        const heightRight = sampleHeight(wrappedU + texelU, wrappedV)
+        const heightUp = sampleHeight(wrappedU, wrappedV + texelV)
+
+        // Build a tangent frame from the world normal.
+        let tangent = normalizeVec3([
+          normalWorld[1],
+          -normalWorld[0],
+          0,
+        ])
+        if (Math.abs(tangent[0]) < 0.001 && Math.abs(tangent[1]) < 0.001) {
+          tangent = normalizeVec3([1, 0, 0])
+        }
+        const bitangent = normalizeVec3([
+          tangent[1] * normalWorld[2] - tangent[2] * normalWorld[1],
+          tangent[2] * normalWorld[0] - tangent[0] * normalWorld[2],
+          tangent[0] * normalWorld[1] - tangent[1] * normalWorld[0],
+        ])
+
+        const bumpNormal = [
+          normalWorld[0] + tangent[0] * (heightCenter - heightRight) * bumpIntensity + bitangent[0] * (heightCenter - heightUp) * bumpIntensity,
+          normalWorld[1] + tangent[1] * (heightCenter - heightRight) * bumpIntensity + bitangent[1] * (heightCenter - heightUp) * bumpIntensity,
+          normalWorld[2] + tangent[2] * (heightCenter - heightRight) * bumpIntensity + bitangent[2] * (heightCenter - heightUp) * bumpIntensity,
+        ] as Vec3
+        normalWorld = normalizeVec3(bumpNormal)
       }
 
       const centroid = [
@@ -459,7 +507,6 @@ export class SoftwareRenderer {
         lightMultiplierBlue += light.blue * (diffuseLighting + specularLighting)
       }
 
-      const triangleUv = mesh.triangleTextureCoords?.[triangleIndex] ?? null
       const activeTexture = mesh.textureData
 
       if (triangleUv !== null && activeTexture !== undefined) {

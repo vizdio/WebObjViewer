@@ -28,6 +28,7 @@ export interface RenderScene {
   smoothShading: boolean
   smoothingAngleThresholdDegrees: number
   sheen: number
+  bumpIntensity: number
   fieldOfView: number
 }
 
@@ -353,11 +354,19 @@ export class WebGLRenderer {
 
   private readonly uSheenLocation: WebGLUniformLocation
 
+  private readonly uBumpIntensityLocation: WebGLUniformLocation
+
   private readonly uDiffuseTextureLocation: WebGLUniformLocation
+
+  private readonly uBumpMapLocation: WebGLUniformLocation
 
   private readonly diffuseTexture: WebGLTexture
 
+  private readonly bumpMapTexture: WebGLTexture
+
   private lastTextureData: Mesh['textureData'] | undefined
+
+  private lastBumpMapData: Mesh['bumpMapData'] | undefined
 
   private currentWidth = 0
 
@@ -483,7 +492,9 @@ export class WebGLRenderer {
       uniform float uAmbient;
       uniform float uDiffuse;
       uniform float uSheen;
+      uniform float uBumpIntensity;
       uniform sampler2D uDiffuseTexture;
+      uniform sampler2D uBumpMap;
 
       void main() {
         vec3 baseColor = vColor;
@@ -504,6 +515,21 @@ export class WebGLRenderer {
         float specularExponent = 4.0 + sheen * 96.0;
         vec3 viewDirection = normalize(uCameraPosition - vWorldPosition);
 
+        vec3 normal = normalize(vNormal);
+        if (uBumpIntensity > 0.0) {
+          vec2 texelSize = vec2(1.0 / 512.0, 1.0 / 512.0);
+          float heightCenter = texture2D(uBumpMap, vec2(vUv.x, 1.0 - vUv.y)).r;
+          float heightRight = texture2D(uBumpMap, vec2(vUv.x + texelSize.x, 1.0 - vUv.y)).r;
+          float heightUp = texture2D(uBumpMap, vec2(vUv.x, 1.0 - vUv.y + texelSize.y)).r;
+          vec3 tangent = normalize(cross(normal, vec3(0.0, 1.0, 0.0)));
+          if (length(tangent) < 0.001) {
+            tangent = normalize(cross(normal, vec3(1.0, 0.0, 0.0)));
+          }
+          vec3 bitangent = normalize(cross(tangent, normal));
+          vec3 bumpNormal = normal + tangent * (heightCenter - heightRight) * uBumpIntensity + bitangent * (heightCenter - heightUp) * uBumpIntensity;
+          normal = normalize(bumpNormal);
+        }
+
         for (int index = 0; index < 4; index += 1) {
           if (index >= uLightCount) {
             break;
@@ -513,7 +539,7 @@ export class WebGLRenderer {
           float distanceSquared = max(0.001, dot(lightVector, lightVector));
           vec3 lightDirection = normalize(lightVector);
           float attenuation = 1.0 / (1.0 + distanceSquared * 0.08);
-          float normalLightDot = dot(vNormal, lightDirection);
+          float normalLightDot = dot(normal, lightDirection);
           float diffuse = max(normalLightDot, 0.0);
           float shadow = 1.0;
           if (index == 0) {
@@ -530,7 +556,7 @@ export class WebGLRenderer {
 
           if (specularWeight > 0.0 && diffuse > 0.0) {
             vec3 halfVector = normalize(lightDirection + viewDirection);
-            float specularDot = max(dot(vNormal, halfVector), 0.0);
+            float specularDot = max(dot(normal, halfVector), 0.0);
             float specularStrength = pow(specularDot, specularExponent) * specularWeight * attenuation * uLightIntensities[index] * shadow;
             specularColor += uLightColors[index] * specularStrength;
           }
@@ -571,7 +597,9 @@ export class WebGLRenderer {
     this.uAmbientLocation = this.requireUniform('uAmbient')
     this.uDiffuseLocation = this.requireUniform('uDiffuse')
     this.uSheenLocation = this.requireUniform('uSheen')
+    this.uBumpIntensityLocation = this.requireUniform('uBumpIntensity')
     this.uDiffuseTextureLocation = this.requireUniform('uDiffuseTexture')
+    this.uBumpMapLocation = this.requireUniform('uBumpMap')
 
     const texture = this.gl.createTexture()
     if (texture === null) {
@@ -593,6 +621,28 @@ export class WebGLRenderer {
       this.gl.RGBA,
       this.gl.UNSIGNED_BYTE,
       new Uint8Array([255, 255, 255, 255]),
+    )
+
+    const bumpTexture = this.gl.createTexture()
+    if (bumpTexture === null) {
+      throw new Error('Unable to create WebGL bump map texture.')
+    }
+    this.bumpMapTexture = bumpTexture
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.bumpMapTexture)
+    this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MIN_FILTER, this.gl.LINEAR)
+    this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MAG_FILTER, this.gl.LINEAR)
+    this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_S, this.gl.REPEAT)
+    this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.REPEAT)
+    this.gl.texImage2D(
+      this.gl.TEXTURE_2D,
+      0,
+      this.gl.RGBA,
+      1,
+      1,
+      0,
+      this.gl.RGBA,
+      this.gl.UNSIGNED_BYTE,
+      new Uint8Array([128, 128, 255, 255]),
     )
   }
 
@@ -659,6 +709,7 @@ export class WebGLRenderer {
     gl.deleteBuffer(this.twoSidedBuffer)
     gl.deleteBuffer(this.shadowMaskBuffer)
     gl.deleteTexture(this.diffuseTexture)
+    gl.deleteTexture(this.bumpMapTexture)
     gl.deleteProgram(this.program)
   }
 
@@ -698,9 +749,13 @@ export class WebGLRenderer {
     gl.uniform1f(this.uAmbientLocation, 0)
     gl.uniform1f(this.uDiffuseLocation, 0.95)
     gl.uniform1f(this.uSheenLocation, Math.max(0, Math.min(1, scene.sheen)))
+    gl.uniform1f(this.uBumpIntensityLocation, Math.max(0, Math.min(1, scene.bumpIntensity)))
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, this.diffuseTexture)
     gl.uniform1i(this.uDiffuseTextureLocation, 0)
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_2D, this.bumpMapTexture)
+    gl.uniform1i(this.uBumpMapLocation, 1)
 
     gl.enable(gl.DEPTH_TEST)
     gl.clearColor(background[0], background[1], background[2], 1)
@@ -736,10 +791,14 @@ export class WebGLRenderer {
     if (vertexKey !== this.cachedVertexKey) {
       const vertices: DrawVertex[] = []
       let activeTextureData: Mesh['textureData'] | undefined
+      let activeBumpMapData: Mesh['bumpMapData'] | undefined
       for (let objectIndex = 0; objectIndex < scene.objects.length; objectIndex += 1) {
         const object = scene.objects[objectIndex]
         if (activeTextureData === undefined && object.mesh.textureData !== undefined) {
           activeTextureData = object.mesh.textureData
+        }
+        if (activeBumpMapData === undefined && object.mesh.bumpMapData !== undefined) {
+          activeBumpMapData = object.mesh.bumpMapData
         }
         const objectVertices = buildFaceVertices(
           object.mesh,
@@ -754,6 +813,7 @@ export class WebGLRenderer {
       }
 
       this.uploadDiffuseTexture(activeTextureData)
+      this.uploadBumpMapTexture(activeBumpMapData)
       this.cachedVertexCount = vertices.length
 
       const vCount = vertices.length
@@ -872,6 +932,42 @@ export class WebGLRenderer {
     }
 
     this.lastTextureData = textureData
+  }
+
+  private uploadBumpMapTexture(textureData: Mesh['bumpMapData']): void {
+    const { gl } = this
+    if (textureData === this.lastBumpMapData) {
+      return
+    }
+
+    gl.bindTexture(gl.TEXTURE_2D, this.bumpMapTexture)
+    if (textureData === undefined) {
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        1,
+        1,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        new Uint8Array([128, 128, 255, 255]),
+      )
+    } else {
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        textureData.width,
+        textureData.height,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        textureData.data,
+      )
+    }
+
+    this.lastBumpMapData = textureData
   }
 }
 

@@ -82,6 +82,8 @@ const MIN_SMOOTHING_ANGLE = 0
 const MAX_SMOOTHING_ANGLE = 180
 const MIN_SHEEN = 0
 const MAX_SHEEN = 1
+const MIN_BUMP_INTENSITY = 0
+const MAX_BUMP_INTENSITY = 1
 
 function isTextureFile(fileName: string): boolean {
   const normalized = fileName.toLowerCase()
@@ -197,6 +199,8 @@ function App() {
   const [smoothingEnabled, setSmoothingEnabled] = useState(true)
   const [smoothingAngleThreshold, setSmoothingAngleThreshold] = useState(50)
   const [sheen, setSheen] = useState(0.5)
+  const [bumpIntensity, setBumpIntensity] = useState(0.5)
+  const [hasBumpMap, setHasBumpMap] = useState(false)
   const [rendererMode, setRendererMode] = useState<RendererMode>('auto')
   const [qualitySectionCollapsed, setQualitySectionCollapsed] = useState(true)
   const [lightingSectionCollapsed, setLightingSectionCollapsed] = useState(true)
@@ -206,6 +210,7 @@ function App() {
   const smoothingEnabledRef = useRef(true)
   const smoothingAngleThresholdRef = useRef(50)
   const sheenRef = useRef(0.5)
+  const bumpIntensityRef = useRef(0.5)
   const demoModeRef = useRef(false)
 
   useEffect(() => {
@@ -239,6 +244,10 @@ function App() {
   useEffect(() => {
     sheenRef.current = sheen
   }, [sheen])
+
+  useEffect(() => {
+    bumpIntensityRef.current = bumpIntensity
+  }, [bumpIntensity])
 
   useEffect(() => {
     objectSettingsRef.current = objectSettings
@@ -388,6 +397,7 @@ function App() {
         smoothShading: smoothingEnabledRef.current,
         smoothingAngleThresholdDegrees: smoothingAngleThresholdRef.current,
         sheen: sheenRef.current,
+        bumpIntensity: bumpIntensityRef.current,
         fieldOfView: Math.PI / 3,
       })
 
@@ -473,6 +483,10 @@ function App() {
     setSheen(Number.parseFloat(event.target.value))
   }
 
+  const handleBumpIntensityChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setBumpIntensity(Number.parseFloat(event.target.value))
+  }
+
   const handleLightColorChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const color = event.target.value
     updateLight(0, 'color', color)
@@ -539,6 +553,7 @@ function App() {
         textureMap,
       )
       const normalizedMesh = normalizeMeshForViewport(parsedMesh)
+      setHasBumpMap(normalizedMesh.bumpMapData !== undefined)
 
       sceneRef.current.setPrimaryMesh(normalizedMesh)
       setObjectSettings((current) => ({
@@ -1052,6 +1067,21 @@ function App() {
                   step="0.01"
                   value={sheen}
                   onChange={handleSheenChange}
+                />
+              </label>
+
+              <label className="slider-field slider-field--wide slider-field--compact">
+                <span>
+                  Bump intensity <strong>{hasBumpMap ? `${Math.round(bumpIntensity * 100)}%` : 'No bump map'}</strong>
+                </span>
+                <input
+                  type="range"
+                  min={MIN_BUMP_INTENSITY.toString()}
+                  max={MAX_BUMP_INTENSITY.toString()}
+                  step="0.01"
+                  value={bumpIntensity}
+                  onChange={handleBumpIntensityChange}
+                  disabled={!hasBumpMap}
                 />
               </label>
             </div>

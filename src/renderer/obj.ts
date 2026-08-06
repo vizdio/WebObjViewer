@@ -19,6 +19,7 @@ function rgbToHex(red: number, green: number, blue: number): string {
 export interface ParsedMtlMaterial {
   diffuseColor?: string
   diffuseMapPath?: string
+  bumpMapPath?: string
 }
 
 export function normalizeResourceName(pathLike: string): string {
@@ -98,6 +99,7 @@ export function parseObjMesh(
   const lines = text.split(/\r?\n/)
   let activeMaterial = ''
   let meshTextureData: TextureData | undefined
+  let meshBumpMapData: TextureData | undefined
 
   for (const rawLine of lines) {
     const line = rawLine.trim()
@@ -146,6 +148,11 @@ export function parseObjMesh(
         if (meshTextureData === undefined && texture !== undefined) {
           meshTextureData = texture
         }
+        const bumpMapPath = material?.bumpMapPath
+        const bumpMap = bumpMapPath !== undefined ? textures[normalizeResourceName(bumpMapPath)] : undefined
+        if (meshBumpMapData === undefined && bumpMap !== undefined) {
+          meshBumpMapData = bumpMap
+        }
 
         if (
           faceTextureIndices.length === faceVertexIndices.length &&
@@ -193,6 +200,7 @@ export function parseObjMesh(
     triangleTextureCoords:
       triangleTextureCoords.length === triangles.length ? triangleTextureCoords : undefined,
     textureData: meshTextureData,
+    bumpMapData: meshBumpMapData,
     doubleSided: true,
   }
 }
@@ -266,6 +274,16 @@ export function parseMtlMaterials(text: string): Record<string, ParsedMtlMateria
       if (mapPath.length > 0) {
         const material = materials[activeMaterial] ?? {}
         material.diffuseMapPath = mapPath
+        materials[activeMaterial] = material
+      }
+      continue
+    }
+
+    if (type === 'map_bump' || type === 'bump') {
+      const mapPath = parseMapPath(tokens)
+      if (mapPath.length > 0) {
+        const material = materials[activeMaterial] ?? {}
+        material.bumpMapPath = mapPath
         materials[activeMaterial] = material
       }
     }
